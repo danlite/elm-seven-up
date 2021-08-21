@@ -1,0 +1,12 @@
+{
+  "name": "seven-up-devdeps",
+  "version": "0.1.0",
+  "description": "Elm dev dependencies",
+  "scripts": {},
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "elm-format": "^0.8.5",
+    "elm-test": "^0.19.1-revision7"
+  }
+}
