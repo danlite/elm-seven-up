@@ -6,6 +6,7 @@ import Element.Background as Background
 import Element.Border as Border
 import Element.Font as Font
 import Element.Input as Input
+import Element.Keyed as Keyed
 import Html exposing (Html)
 import Html.Attributes exposing (style)
 import List.Extra exposing (getAt)
@@ -64,15 +65,19 @@ pileStartValue =
 
 
 minCardValue =
-    6
+    1
 
 
 maxCardValue =
-    8
+    13
 
 
 humanPlayer =
     0
+
+
+computerSpeedMs =
+    500
 
 
 type alias Model =
@@ -119,7 +124,7 @@ type Msg
 
 computerLoop : Model -> ( Model, Cmd Msg )
 computerLoop nextState =
-    ( nextState, computerPlay dumbStrategy nextState )
+    ( nextState, computerPlay smartStrategy nextState )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -178,9 +183,102 @@ dumbStrategy playerNum hand model =
             Pass playerNum
 
 
+between : number -> number -> number -> Bool
+between a b c =
+    if a < c && c < b then
+        True
+
+    else if b < c && c < a then
+        True
+
+    else
+        False
+
+
+smartRank : Deck -> Card -> Int
+smartRank hand playableCard =
+    let
+        val =
+            cardValue playableCard
+
+        extremity =
+            abs <| pileStartValue - val
+
+        sameSuit : Deck
+        sameSuit =
+            List.filter (\c -> cardSuit c == cardSuit playableCard) hand
+
+        ownNextCards : Bool
+        ownNextCards =
+            List.all
+                (\c -> List.member c hand)
+                (nextCards playableCard)
+
+        mostUpper : Maybe Card
+        mostUpper =
+            sameSuit
+                |> List.Extra.maximumBy cardValue
+
+        mostLower : Maybe Card
+        mostLower =
+            sameSuit
+                |> List.Extra.minimumBy cardValue
+
+        extremeCandidates =
+            List.filterMap identity <|
+                if val < pileStartValue then
+                    [ mostLower ]
+
+                else if val > pileStartValue then
+                    [ mostUpper ]
+
+                else
+                    [ mostLower, mostUpper ]
+
+        gapsBeforeExtremes : Int
+        gapsBeforeExtremes =
+            List.foldl
+                (\extreme gapSum ->
+                    let
+                        stepsBeforeExtreme =
+                            if cardValue extreme == cardValue playableCard then
+                                0
+
+                            else
+                                (abs <| cardValue extreme - cardValue playableCard) - 1
+
+                        cardsInHandBeforeExtreme =
+                            List.length <|
+                                List.filter
+                                    (\c ->
+                                        cardValue c
+                                            |> between (cardValue playableCard) (cardValue extreme)
+                                    )
+                                    sameSuit
+                    in
+                    gapSum + (stepsBeforeExtreme - cardsInHandBeforeExtreme)
+                )
+                0
+                extremeCandidates
+    in
+    (gapsBeforeExtremes * 100)
+        + (if ownNextCards then
+            10
+
+           else
+            0
+          )
+        + extremity
+
+
 smartStrategy : TurnStrategy
 smartStrategy playerNum hand model =
-    NoOp
+    case List.Extra.maximumBy (smartRank hand) (List.filter (\c -> canPlay c model) hand) of
+        Just smartestCard ->
+            Play playerNum smartestCard
+
+        _ ->
+            Pass playerNum
 
 
 computerPlay : TurnStrategy -> Model -> Cmd Msg
@@ -189,7 +287,7 @@ computerPlay strategy model =
         Cmd.none
 
     else
-        Process.sleep 500
+        Process.sleep computerSpeedMs
             |> Task.perform
                 (\_ -> mapToComputerStrategy model strategy model)
 
@@ -238,6 +336,28 @@ inHand card playerNum model =
     playerHand playerNum model
         |> Maybe.map (List.member card)
         |> Maybe.withDefault False
+
+
+nextCards : Card -> List Card
+nextCards card =
+    let
+        suit =
+            cardSuit card
+
+        value =
+            cardValue card
+    in
+    if value == maxCardValue || value == minCardValue then
+        []
+
+    else if value < pileStartValue then
+        [ Card suit (value - 1) ]
+
+    else if value > pileStartValue then
+        [ Card suit (value + 1) ]
+
+    else
+        [ Card suit (value - 1), Card suit (value + 1) ]
 
 
 pileForSuit : Suit -> Model -> Pile
@@ -620,6 +740,18 @@ playerAttr current =
            )
 
 
+button : Element Msg -> Element Msg
+button =
+    el
+        [ padding 5
+        , Background.color <| rgb 0.9 0.9 0.9
+        , Border.color <| rgb 0.8 0.8 0.8
+        , Border.solid
+        , Border.width 1
+        , Border.rounded 2
+        ]
+
+
 passButton : Model -> Int -> Element Msg
 passButton model playerNum =
     let
@@ -640,9 +772,9 @@ passButton model playerNum =
     in
     if isCurrentPlayer playerNum model && not handCanPlay then
         Input.button
-            [ Font.glow |> cta ]
+            []
             { onPress = Just onPress
-            , label = text "Pass"
+            , label = button <| text "Pass"
             }
 
     else
@@ -651,14 +783,30 @@ passButton model playerNum =
 
 handEl : Model -> Int -> Deck -> Element Msg
 handEl model playerNum hand =
-    row [ spacing 10, height (px 70) ] <|
-        (column (playerAttr (isCurrentPlayer playerNum model)) <|
+    Keyed.row [ spacing 10, height (px 70) ] <|
+        ( "header"
+        , column (playerAttr (isCurrentPlayer playerNum model)) <|
             [ text ("Player " ++ fromInt (playerNum + 1))
             , passButton model playerNum
             , playerMedal model playerNum
             ]
         )
-            :: List.map (cardButton model playerNum) (List.sortWith compareCard hand)
+            :: List.map
+                (\c ->
+                    let
+                        btn =
+                            cardButton model playerNum c
+                    in
+                    Tuple.pair (cardValueToString <| cardValue c) <|
+                        if buttonHints then
+                            el
+                                [ inFront <| text <| fromInt <| smartRank hand c ]
+                                btn
+
+                        else
+                            btn
+                )
+                (List.sortWith compareCard hand)
 
 
 playerMedal : Model -> Int -> Element Msg
@@ -868,12 +1016,13 @@ view model =
             [ Input.button []
                 { onPress = Just <| Shuffle (DealAll seats)
                 , label =
-                    text <|
-                        if List.any (always True) model.hands then
-                            "Restart Game"
+                    button <|
+                        text <|
+                            if List.any (always True) model.hands then
+                                "Restart Game"
 
-                        else
-                            "New Game"
+                            else
+                                "New Game"
                 }
             , game model
             ]
